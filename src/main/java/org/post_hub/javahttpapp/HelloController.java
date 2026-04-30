@@ -12,6 +12,7 @@ public class HelloController {
     public Map<String, String> root() {
         return Map.of(
                 "message", "Spring Boot app is running",
+                "message", "testing jenkins",
                 "endpoint", "/"
         );
     }
