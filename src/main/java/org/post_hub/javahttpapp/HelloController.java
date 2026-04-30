@@ -11,7 +11,7 @@ public class HelloController {
     @GetMapping("/")
     public Map<String, String> root() {
         return Map.of(
-                "message", "Spring Boot app is running. testing jenkins 3",
+                "message", "Spring Boot app is running. testing jenkins 45",
                 "endpoint", "/"
         );
     }
