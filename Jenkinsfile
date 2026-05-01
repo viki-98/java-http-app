@@ -5,50 +5,115 @@ pipeline {
         githubPush()
     }
 
+    options {
+        disableConcurrentBuilds()
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 20, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(
+            name: 'GIT_REPO_URL',
+            defaultValue: 'https://github.com/viki-98/java-http-app.git',
+            description: 'GitHub repository URL'
+        )
+
+        string(
+            name: 'GIT_BRANCH',
+            defaultValue: 'master',
+            description: 'Git branch to build'
+        )
+
+        string(
+            name: 'IMAGE_NAME',
+            defaultValue: 'java-http-app',
+            description: 'Docker image name'
+        )
+
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'jenkins',
+            description: 'Docker image tag'
+        )
+
+        string(
+            name: 'CONTAINER_NAME',
+            defaultValue: 'java-http-app-jenkins',
+            description: 'Docker container name'
+        )
+
+        string(
+            name: 'HOST_PORT',
+            defaultValue: '8082',
+            description: 'External port on the server'
+        )
+
+        string(
+            name: 'CONTAINER_PORT',
+            defaultValue: '8080',
+            description: 'Internal port inside Docker container'
+        )
+    }
+
     environment {
-        GIT_REPO = 'https://github.com/viki-98/java-http-app.git'
-        GIT_BRANCH = 'master'
         CREDENTIALS_ID = 'github-pat'
 
-        IMAGE_NAME = 'java-http-app'
-        IMAGE_TAG = 'jenkins'
+        DOCKER_NETWORK = 'tmp_app-network'
 
-        CONTAINER_NAME = 'java-http-app-jenkins'
-
-        HOST_PORT = '8082'
-        CONTAINER_PORT = '8080'
+        DB_HOST = 'postgres'
+        DB_PORT = '5432'
+        DB_NAME = 'appdb'
+        DB_USERNAME = 'appuser'
     }
 
     stages {
         stage('1. Checkout from GitHub') {
             steps {
-                echo 'Cloning java-http-app project from GitHub...'
+                echo "Cloning repository: ${params.GIT_REPO_URL}"
+                echo "Branch: ${params.GIT_BRANCH}"
 
-                git branch: "${GIT_BRANCH}",
-                    credentialsId: "${CREDENTIALS_ID}",
-                    url: "${GIT_REPO}"
+                git branch: "${params.GIT_BRANCH}",
+                    credentialsId: "${env.CREDENTIALS_ID}",
+                    url: "${params.GIT_REPO_URL}"
             }
         }
 
         stage('2. Show project files') {
             steps {
-                echo 'Checking files that Jenkins downloaded...'
-                sh 'pwd'
-                sh 'ls -la'
+                echo 'Checking files downloaded by Jenkins...'
+
+                sh '''
+                    echo "Current workspace:"
+                    pwd
+
+                    echo "Project files:"
+                    ls -la
+                '''
             }
         }
 
-        stage('3. Check Dockerfile') {
+        stage('3. Validate Docker configuration') {
             steps {
-                echo 'Checking that Dockerfile exists...'
-                sh 'test -f Dockerfile'
-                sh 'cat Dockerfile'
+                echo 'Checking Dockerfile and Docker network...'
+
+                sh '''
+                    echo "Checking Dockerfile..."
+                    test -f Dockerfile
+
+                    echo "Dockerfile exists."
+
+                    echo "Checking Docker network..."
+                    docker network inspect ${DOCKER_NETWORK} > /dev/null
+
+                    echo "Docker network ${DOCKER_NETWORK} exists."
+                '''
             }
         }
 
         stage('4. Build Docker image') {
             steps {
-                echo 'Building Docker image from Dockerfile...'
+                echo "Building Docker image: ${params.IMAGE_NAME}:${params.IMAGE_TAG}"
 
                 sh '''
                     docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
@@ -56,9 +121,9 @@ pipeline {
             }
         }
 
-        stage('5. Remove old Jenkins test container') {
+        stage('5. Remove old container') {
             steps {
-                echo 'Removing old java-http-app-jenkins container if it exists...'
+                echo "Removing old container if exists: ${params.CONTAINER_NAME}"
 
                 sh '''
                     docker rm -f ${CONTAINER_NAME} || true
@@ -68,31 +133,69 @@ pipeline {
 
         stage('6. Run new container') {
             steps {
-                echo 'Starting new container on port 8082 with database connection...'
+                echo "Running new container: ${params.CONTAINER_NAME}"
+                echo "Port mapping: ${params.HOST_PORT}:${params.CONTAINER_PORT}"
 
-                sh '''
-                    docker run -d \
-                    --name ${CONTAINER_NAME} \
-                    --network tmp_app-network \
-                    --restart unless-stopped \
-                    -p ${HOST_PORT}:${CONTAINER_PORT} \
-                    -e SERVER_PORT=8080 \
-                    -e DB_HOST=postgres \
-                    -e DB_PORT=5432 \
-                    -e DB_NAME=appdb \
-                    -e DB_USERNAME=appuser \
-                    -e DB_PASSWORD=StrongPass123 \
-                    ${IMAGE_NAME}:${IMAGE_TAG}
-                '''
+                withCredentials([
+                    string(credentialsId: 'db-password', variable: 'DB_PASSWORD_VALUE')
+                ]) {
+                    sh '''
+                        docker run -d \
+                        --name ${CONTAINER_NAME} \
+                        --network ${DOCKER_NETWORK} \
+                        --restart unless-stopped \
+                        -p ${HOST_PORT}:${CONTAINER_PORT} \
+                        -e SERVER_PORT=${CONTAINER_PORT} \
+                        -e DB_HOST=${DB_HOST} \
+                        -e DB_PORT=${DB_PORT} \
+                        -e DB_NAME=${DB_NAME} \
+                        -e DB_USERNAME=${DB_USERNAME} \
+                        -e DB_PASSWORD="${DB_PASSWORD_VALUE}" \
+                        ${IMAGE_NAME}:${IMAGE_TAG}
+                    '''
+                }
             }
         }
 
         stage('7. Check container') {
             steps {
-                echo 'Checking if container is running...'
-                sh 'docker ps --filter "name=${CONTAINER_NAME}"'
-                sh 'docker logs --tail=100 ${CONTAINER_NAME}'
+                echo "Checking container: ${params.CONTAINER_NAME}"
+
+                sh '''
+                    echo "Running container:"
+                    docker ps --filter "name=${CONTAINER_NAME}"
+
+                    echo "Container logs:"
+                    docker logs --tail=100 ${CONTAINER_NAME}
+                '''
             }
+        }
+
+        stage('8. Health check') {
+            steps {
+                echo "Checking application health on localhost:${params.HOST_PORT}"
+
+                sh '''
+                    sleep 5
+
+                    echo "Health check:"
+                    curl -f http://localhost:${HOST_PORT}/actuator/health || true
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline finished successfully. Application was built and deployed.'
+        }
+
+        failure {
+            echo 'Pipeline failed. Check Console Output and container logs.'
+        }
+
+        always {
+            echo 'Pipeline finished.'
         }
     }
 }
